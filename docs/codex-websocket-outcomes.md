@@ -67,6 +67,19 @@ The local sandbox runner is
 The runner and local test logs are Forge artifacts, not portable release files.
 GitHub Actions is disabled on the newly created fork; validation above is local.
 
+## Upstream updates
+
+Run `./scripts/sync-upstream.sh` from a clean fork branch to merge the latest
+upstream `main` while preserving this patch. [UPSTREAM.md](../UPSTREAM.md)
+documents update branches, conflict recovery, and publishing an update PR.
+Disposable local Git fixtures pass for retained fork history, repeated updates,
+dirty and detached checkouts, unfinished operations, conflict recovery, ignored
+file/directory/symlink collisions, fresh-clone remote setup, and fetch failures.
+Bash syntax and ShellCheck pass. The server build also passes after adding the
+helper; the Go source is unchanged from the validation above.
+
+## Deployment boundary
+
 Pyre remains responsible for gateway packaging and any later rollout. This
 producer change does not authorize gateway deployment or a shared-service
 restart. Local tests do not establish production recovery or resolve the
