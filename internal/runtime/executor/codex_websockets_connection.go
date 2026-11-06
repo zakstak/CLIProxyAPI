@@ -131,7 +131,7 @@ func mapCodexWebsocketReadError(err error) error {
 	return err
 }
 
-// codexWebsocketTurnTransportError turns a transport loss (EOF, reset, close 1006) into
+// codexWebsocketTurnTransportError turns a transport loss (EOF, reset, timeout, close 1006) into
 // the turn error that keeps the downstream websocket open. Status, policy and other
 // close codes are returned unchanged and keep ending the downstream socket.
 func codexWebsocketTurnTransportError(err error) error {
@@ -143,11 +143,13 @@ func codexWebsocketTurnTransportError(err error) error {
 		return err
 	}
 	var closeErr *websocket.CloseError
+	var timeoutErr net.Error
 	if errors.As(err, &closeErr) {
 		if closeErr.Code != websocket.CloseAbnormalClosure {
 			return err
 		}
-	} else if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) &&
+	} else if !(errors.As(err, &timeoutErr) && timeoutErr.Timeout() && !errors.Is(err, context.DeadlineExceeded)) &&
+		!errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) &&
 		!errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) &&
 		!errors.Is(err, syscall.ECONNRESET) && !errors.Is(err, syscall.ECONNABORTED) &&
 		!errors.Is(err, syscall.EPIPE) {

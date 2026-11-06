@@ -275,6 +275,19 @@ type StreamChunk struct {
 	Incomplete bool
 	// Err reports any terminal error encountered while producing chunks.
 	Err error
+	// Outcome reports one response's result on a stream that can carry many responses.
+	// Executors emit it once per terminal response, independently of connection closure.
+	Outcome *StreamResponseOutcome
+	// ConnectionOnly marks a terminal connection error with no outstanding response.
+	// Forward the error without counting another failed response.
+	ConnectionOnly bool
+}
+
+// StreamResponseOutcome separates a response result from its connection's lifetime.
+type StreamResponseOutcome struct {
+	ResponseID string
+	Completed  bool
+	Err        error
 }
 
 // StreamResult wraps the streaming response, providing both the chunk channel

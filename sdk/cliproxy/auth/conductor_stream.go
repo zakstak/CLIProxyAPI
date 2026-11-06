@@ -154,23 +154,39 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		var failed bool
 		var sawCompleted bool
 		var sawIncomplete bool
+		responseOutcomes := false
+		seenResponses := make(map[string]struct{})
 		forward := true
 		var rewriter *StreamRewriter
 		if aliasResult.ForceMapping && strings.TrimSpace(aliasResult.OriginalAlias) != "" {
 			rewriter = NewStreamRewriter(StreamRewriteOptions{RewriteModel: aliasResult.OriginalAlias})
 		}
+		recordOutcome := func(err error, completed bool) {
+			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: err == nil, CompletedResponse: completed, Options: opts, AccessToken: accessToken, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
+			if err != nil {
+				entry := logEntryWithRequestID(ctx)
+				warnLogUpstreamFailure(ctx, entry, provider, resultModel, auth, time.Since(streamStart), err)
+				result.Error = resultErrorFromError(err)
+				action, okAction := matchRequestScopedErrorAction(auth, err, m.runtimeConfigSnapshot())
+				result.RetryAfter = retryAfterFromError(err)
+				result.CredentialScope = isCredentialScopedError(err)
+				applyRequestScopedActionToResult(action, okAction, &result)
+			}
+			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+		}
 		emit := func(chunk cliproxyexecutor.StreamChunk) bool {
+			if outcome := chunk.Outcome; outcome != nil {
+				responseOutcomes = true
+				if _, seen := seenResponses[outcome.ResponseID]; outcome.ResponseID == "" || !seen {
+					recordOutcome(outcome.Err, outcome.Completed)
+					seenResponses[outcome.ResponseID] = struct{}{}
+				}
+			}
 			if chunk.Err != nil && !failed {
 				failed = true
-				entry := logEntryWithRequestID(ctx)
-				warnLogUpstreamFailure(ctx, entry, provider, resultModel, auth, time.Since(streamStart), chunk.Err)
-				rerr := resultErrorFromError(chunk.Err)
-				action, okAction := matchRequestScopedErrorAction(auth, chunk.Err, m.runtimeConfigSnapshot())
-				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: opts, AccessToken: accessToken, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
-				result.RetryAfter = retryAfterFromError(chunk.Err)
-				result.CredentialScope = isCredentialScopedError(chunk.Err)
-				applyRequestScopedActionToResult(action, okAction, &result)
-				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+				if !chunk.ConnectionOnly {
+					recordOutcome(chunk.Err, false)
+				}
 			}
 			if !forward {
 				return false
@@ -236,8 +252,8 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				return
 			}
 		}
-		if !failed && (ephemeralResult || claudeOAuthRequestCancellation(ctx, auth, nil) == nil) {
-			m.recordExecutionResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: true, CompletedResponse: sawCompleted && !sawIncomplete, Options: opts, AccessToken: accessToken, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}, auth, ephemeralResult)
+		if !failed && !responseOutcomes && (ephemeralResult || claudeOAuthRequestCancellation(ctx, auth, nil) == nil) {
+			recordOutcome(nil, sawCompleted && !sawIncomplete)
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}

@@ -585,6 +585,9 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				default:
 				}
 				if ctx.Err() == nil {
+					metadataMu.Lock()
+					idle := !firstResponse && !responseActive && len(pending) == 0 && len(unacknowledgedSteers) == 0 && len(acceptedSteers) == 0 && len(pendingCreates) == 0 && len(consumedPayload) == 0
+					metadataMu.Unlock()
 					var connectionErr error = &codexDuplexConnectionError{cause: errRead}
 					if lost := codexWebsocketTurnTransportError(errRead); cliproxyexecutor.IsUpstreamWebsocketTurnError(lost) {
 						// Stop and join the writer first: after that nothing else is sent
@@ -592,7 +595,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 						cancel()
 						<-writerDone
 						metadataMu.Lock()
-						idle := !firstResponse && !responseActive && len(pending) == 0 && len(unacknowledgedSteers) == 0 && len(acceptedSteers) == 0 && len(pendingCreates) == 0 && len(consumedPayload) == 0
+						idle = !firstResponse && !responseActive && len(pending) == 0 && len(unacknowledgedSteers) == 0 && len(acceptedSteers) == 0 && len(pendingCreates) == 0 && len(consumedPayload) == 0
 						turnErr := &cliproxyexecutor.UpstreamWebsocketTurnError{Cause: errRead, Idle: idle}
 						if firstResponse || responseActive {
 							turnErr.EventID = strings.Clone(ojson.GetBytesNoCopy(current.originalPayload, "event_id").String())
@@ -634,7 +637,12 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 						metadataMu.Unlock()
 						if known {
 							// Already forwarded; EOF only ends the finished operation. Drop the loss marker.
-							connectionErr = &codexDuplexConnectionError{cause: errors.Unwrap(errRead)}
+							cause := errRead
+							var previousLoss *cliproxyexecutor.UpstreamWebsocketTurnError
+							if errors.As(errRead, &previousLoss) {
+								cause = previousLoss.Cause
+							}
+							connectionErr = &codexDuplexConnectionError{cause: cause}
 						} else {
 							if sess != nil {
 								sess.markTerminalError(conn, turnErr)
@@ -644,7 +652,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 						}
 					}
 					reporter.PublishFailure(ctx, connectionErr)
-					send(cliproxyexecutor.StreamChunk{Err: connectionErr})
+					send(cliproxyexecutor.StreamChunk{Err: connectionErr, ConnectionOnly: idle})
 				}
 				return
 			}
@@ -888,7 +896,19 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				}
 				publishCodexImageToolUsageWithOutputItems(ctx, reporter, current.clientBody, payload, outputItems, outputFallback)
 			}
-			if !send(cliproxyexecutor.StreamChunk{Payload: helps.EnsureResponsesUsageDetails(payload), Incomplete: eventType == "response.incomplete"}) {
+			var outcome *cliproxyexecutor.StreamResponseOutcome
+			if terminalErr != nil || eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
+				outcomeID := ojson.GetBytesNoCopy(payload, "response.id").String()
+				if outcomeID == "" {
+					outcomeID = ojson.GetBytesNoCopy(payload, "response_id").String()
+				}
+				outcome = &cliproxyexecutor.StreamResponseOutcome{
+					ResponseID: strings.Clone(outcomeID),
+					Completed:  eventType == "response.completed" || eventType == "response.done",
+					Err:        terminalErr,
+				}
+			}
+			if !send(cliproxyexecutor.StreamChunk{Payload: helps.EnsureResponsesUsageDetails(payload), Incomplete: eventType == "response.incomplete", Outcome: outcome}) {
 				return
 			}
 			if establishing {
